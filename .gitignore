@@ -1,0 +1,12 @@
+*.img
+*.bin
+*.zip
+*.iso
+*.wim
+*.esd
+*.log
+*.pyc
+__pycache__/
+fw/
+topaz-backup/
+unpacked/
