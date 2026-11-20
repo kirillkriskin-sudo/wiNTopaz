@@ -1,0 +1,62 @@
+diff --git a/uefi/build_topaz_uefi.sh b/uefi/build_topaz_uefi.sh
+index eb68c24..6176136 100755
+--- a/uefi/build_topaz_uefi.sh
++++ b/uefi/build_topaz_uefi.sh
+@@ -1,11 +1,13 @@
+ #!/bin/bash
+ # Build the working topaz UEFI (USB host + Windows boot) from a Mu-Silicium checkout.
+-# Run on the build laptop:  uefi/build_topaz_uefi.sh ~/work/Mu-Silicium out.img [RELEASE|DEBUG]
++# Run with MKBOOTIMG_DIR pointing to an AOSP platform/system/tools/mkbootimg checkout.
++# Usage: uefi/build_topaz_uefi.sh ~/work/Mu-Silicium /absolute/path/out.img [RELEASE|DEBUG]
+ # Known-good pins: Mu-Silicium e5f9ec06, Mu_Basecore bb557081, Silicium-ACPI 9abca7f9, Binaries 203fb36b.
+ # Result is boot header v4; test with `fastboot boot out.img` (never flash untested images).
+ set -e
+ HERE=$(cd "$(dirname "$0")" && pwd)
+ MU=${1:?Mu-Silicium path}; OUT=${2:?output image}; TARGET=${3:-RELEASE}
++: "${MKBOOTIMG_DIR:?set MKBOOTIMG_DIR to the AOSP mkbootimg checkout}"
+ cd "$MU"
+ 
+ apply() { # repo-relative patch, git dir
+diff --git a/uefi/mu_v4pack.sh b/uefi/mu_v4pack.sh
+index 22752b4..5299af9 100755
+--- a/uefi/mu_v4pack.sh
++++ b/uefi/mu_v4pack.sh
+@@ -2,15 +2,27 @@
+ # Repack Mu-Silicium header-v1 image into header-v4 for Xiaomi topaz ABL.
+ # ABL here silently ignores v1 images; v4 works. Shim is PIC, so text_offset -> 0.
+ set -e
+-IN=$1; OUT=$2; T=$(mktemp -d)
+-python3 /home/makr/work/topaz/mkbootimg_src/unpack_bootimg.py --boot_img "$IN" --out $T >/dev/null
+-gzip -dc $T/kernel > $T/Image 2>/dev/null || true
+-python3 - "$T/Image" <<PY
+-import struct,sys
+-p=sys.argv[1]; d=bytearray(open(p,"rb").read()); d=d.ljust((len(d)+0xFFF)&~0xFFF,b"\0")
+-assert d[56:60]==b"ARMd"
+-struct.pack_into("<Q",d,8,0); struct.pack_into("<Q",d,16,len(d)); struct.pack_into("<Q",d,24,0xA)
+-open(p,"wb").write(d)
++IN=${1:?input image}
++OUT=${2:?output image}
++TOOLS=${MKBOOTIMG_DIR:?set MKBOOTIMG_DIR to the AOSP mkbootimg checkout}
++T=$(mktemp -d)
++trap 'rm -rf -- "$T"' EXIT
++python3 "$TOOLS/unpack_bootimg.py" --boot_img "$IN" --out "$T" >/dev/null
++python3 - "$T/kernel" "$T/Image" <<'PY'
++import struct
++import sys
++import zlib
++from pathlib import Path
++
++kernel = Path(sys.argv[1]).read_bytes()
++if kernel.startswith(b"\x1f\x8b"):
++    # The v1 image appends a device tree after the gzip member.
++    kernel = zlib.decompress(kernel, wbits=31)
++if kernel[56:60] != b"ARMd":
++    sys.exit("Expected an ARM64 Linux Image header")
++image = bytearray(kernel.ljust((len(kernel) + 0xFFF) & ~0xFFF, b"\0"))
++struct.pack_into("<QQQ", image, 8, 0, len(image), 0xA)
++Path(sys.argv[2]).write_bytes(image)
+ PY
+-python3 /home/makr/work/topaz/mkbootimg_src/mkbootimg.py --header_version 4 --kernel $T/Image --os_version 13.0.0 --os_patch_level 2025-01 -o "$OUT"
+-rm -rf $T; ls -l "$OUT"
++python3 "$TOOLS/mkbootimg.py" --header_version 4 --kernel "$T/Image" --os_version 13.0.0 --os_patch_level 2025-01 -o "$OUT"
++ls -l "$OUT"
